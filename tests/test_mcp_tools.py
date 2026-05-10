@@ -10,6 +10,10 @@ from mcp_email_server.app import (
     get_emails_content,
     list_available_accounts,
     list_emails_metadata,
+    list_mailboxes,
+    mark_emails_flagged,
+    mark_emails_seen,
+    move_emails,
     send_email,
 )
 from mcp_email_server.config import EmailServer, EmailSettings, ProviderSettings
@@ -19,6 +23,8 @@ from mcp_email_server.emails.models import (
     EmailContentBatchResponse,
     EmailMetadata,
     EmailMetadataPageResponse,
+    MailboxInfo,
+    MailboxListResponse,
 )
 
 
@@ -544,3 +550,171 @@ class TestMcpTools:
             )
 
             assert result.emails[0].message_id == "<test@example.com>"
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_seen_as_read(self):
+        """Test mark_emails_seen MCP tool marking emails as read."""
+        mock_handler = AsyncMock()
+        mock_handler.mark_emails_seen.return_value = (["12345", "12346"], [])
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await mark_emails_seen(
+                account_name="test_account",
+                email_ids=["12345", "12346"],
+            )
+
+            assert result == "Successfully marked 2 email(s) as read"
+            mock_handler.mark_emails_seen.assert_called_once_with(["12345", "12346"], True, "INBOX")
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_seen_as_unread(self):
+        """Test mark_emails_seen MCP tool marking emails as unread."""
+        mock_handler = AsyncMock()
+        mock_handler.mark_emails_seen.return_value = (["12345"], [])
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await mark_emails_seen(
+                account_name="test_account",
+                email_ids=["12345"],
+                seen=False,
+            )
+
+            assert result == "Successfully marked 1 email(s) as unread"
+            mock_handler.mark_emails_seen.assert_called_once_with(["12345"], False, "INBOX")
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_seen_with_failures(self):
+        """Test mark_emails_seen MCP tool with partial failures."""
+        mock_handler = AsyncMock()
+        mock_handler.mark_emails_seen.return_value = (["12345"], ["12346"])
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await mark_emails_seen(
+                account_name="test_account",
+                email_ids=["12345", "12346"],
+            )
+
+            assert result == "Successfully marked 1 email(s) as read, failed to mark 1 email(s): 12346"
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_seen_custom_mailbox(self):
+        """Test mark_emails_seen MCP tool with a custom mailbox."""
+        mock_handler = AsyncMock()
+        mock_handler.mark_emails_seen.return_value = (["12345"], [])
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            await mark_emails_seen(
+                account_name="test_account",
+                email_ids=["12345"],
+                mailbox="Archive",
+            )
+
+            mock_handler.mark_emails_seen.assert_called_once_with(["12345"], True, "Archive")
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_flagged_as_flagged(self):
+        """Test mark_emails_flagged MCP tool flagging emails."""
+        mock_handler = AsyncMock()
+        mock_handler.mark_emails_flagged.return_value = (["12345", "12346"], [])
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await mark_emails_flagged(
+                account_name="test_account",
+                email_ids=["12345", "12346"],
+            )
+
+            assert result == "Successfully marked 2 email(s) as flagged"
+            mock_handler.mark_emails_flagged.assert_called_once_with(["12345", "12346"], True, "INBOX")
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_flagged_as_unflagged(self):
+        """Test mark_emails_flagged MCP tool removing flag from emails."""
+        mock_handler = AsyncMock()
+        mock_handler.mark_emails_flagged.return_value = (["12345"], [])
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await mark_emails_flagged(
+                account_name="test_account",
+                email_ids=["12345"],
+                flagged=False,
+            )
+
+            assert result == "Successfully marked 1 email(s) as unflagged"
+            mock_handler.mark_emails_flagged.assert_called_once_with(["12345"], False, "INBOX")
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_flagged_with_failures(self):
+        """Test mark_emails_flagged MCP tool with partial failures."""
+        mock_handler = AsyncMock()
+        mock_handler.mark_emails_flagged.return_value = (["12345"], ["12346", "12347"])
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await mark_emails_flagged(
+                account_name="test_account",
+                email_ids=["12345", "12346", "12347"],
+            )
+
+            assert result == "Successfully marked 1 email(s) as flagged, failed to mark 2 email(s): 12346, 12347"
+
+    @pytest.mark.asyncio
+    async def test_list_mailboxes_returns_response(self):
+        """Test list_mailboxes MCP tool returns MailboxListResponse."""
+        expected = MailboxListResponse(
+            mailboxes=[
+                MailboxInfo(name="INBOX", delimiter="/", flags=[r"\HasNoChildren"]),
+                MailboxInfo(name="Sent", delimiter="/", flags=[r"\Sent", r"\HasNoChildren"]),
+            ]
+        )
+        mock_handler = AsyncMock()
+        mock_handler.list_mailboxes.return_value = expected
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await list_mailboxes(account_name="test_account")
+
+            assert result == expected
+            assert len(result.mailboxes) == 2
+            mock_handler.list_mailboxes.assert_called_once_with("*")
+
+    @pytest.mark.asyncio
+    async def test_list_mailboxes_with_pattern(self):
+        """Test list_mailboxes MCP tool forwards pattern to handler."""
+        mock_handler = AsyncMock()
+        mock_handler.list_mailboxes.return_value = MailboxListResponse(mailboxes=[])
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            await list_mailboxes(account_name="test_account", pattern="INBOX.*")
+
+            mock_handler.list_mailboxes.assert_called_once_with("INBOX.*")
+
+    @pytest.mark.asyncio
+    async def test_move_emails_success(self):
+        """Test move_emails MCP tool with all emails moved."""
+        mock_handler = AsyncMock()
+        mock_handler.move_emails.return_value = (["12345", "12346"], [])
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await move_emails(
+                account_name="test_account",
+                email_ids=["12345", "12346"],
+                source_mailbox="INBOX",
+                destination_mailbox="Archive",
+            )
+
+            assert result == "Successfully moved 2 email(s) to 'Archive'"
+            mock_handler.move_emails.assert_called_once_with(["12345", "12346"], "INBOX", "Archive")
+
+    @pytest.mark.asyncio
+    async def test_move_emails_with_failures(self):
+        """Test move_emails MCP tool with partial failures."""
+        mock_handler = AsyncMock()
+        mock_handler.move_emails.return_value = (["12345"], ["12346"])
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await move_emails(
+                account_name="test_account",
+                email_ids=["12345", "12346"],
+                source_mailbox="INBOX",
+                destination_mailbox="Archive",
+            )
+
+            assert result == "Successfully moved 1 email(s) to 'Archive', failed to move 1 email(s): 12346"

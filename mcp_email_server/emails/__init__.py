@@ -7,6 +7,7 @@ if TYPE_CHECKING:
         AttachmentDownloadResponse,
         EmailContentBatchResponse,
         EmailMetadataPageResponse,
+        MailboxListResponse,
     )
 
 
@@ -83,6 +84,36 @@ class EmailHandler(abc.ABC):
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """
         Delete emails by their IDs. Returns (deleted_ids, failed_ids)
+        """
+
+    @abc.abstractmethod
+    async def mark_emails_seen(
+        self, email_ids: list[str], seen: bool = True, mailbox: str = "INBOX"
+    ) -> tuple[list[str], list[str]]:
+        """
+        Mark emails as read (seen=True) or unread (seen=False). Returns (updated_ids, failed_ids).
+        """
+
+    @abc.abstractmethod
+    async def mark_emails_flagged(
+        self, email_ids: list[str], flagged: bool = True, mailbox: str = "INBOX"
+    ) -> tuple[list[str], list[str]]:
+        """
+        Mark emails as flagged/starred (flagged=True) or unflagged (flagged=False). Returns (updated_ids, failed_ids).
+        """
+
+    @abc.abstractmethod
+    async def list_mailboxes(self, pattern: str = "*") -> "MailboxListResponse":
+        """
+        List all available mailboxes/folders matching the given pattern.
+        """
+
+    @abc.abstractmethod
+    async def move_emails(
+        self, email_ids: list[str], source_mailbox: str, destination_mailbox: str
+    ) -> tuple[list[str], list[str]]:
+        """
+        Move emails from source to destination mailbox using RFC 6851 UID MOVE. Returns (moved_ids, failed_ids).
         """
 
     @abc.abstractmethod

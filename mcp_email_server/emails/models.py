@@ -63,3 +63,17 @@ class AttachmentDownloadResponse(BaseModel):
     mime_type: str
     size: int
     saved_path: str
+
+
+class MailboxInfo(BaseModel):
+    """Info about a single IMAP mailbox/folder"""
+
+    name: str
+    delimiter: str | None
+    flags: list[str]
+
+
+class MailboxListResponse(BaseModel):
+    """List of available IMAP mailboxes/folders"""
+
+    mailboxes: list[MailboxInfo]
