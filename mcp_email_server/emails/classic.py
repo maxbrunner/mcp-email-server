@@ -26,6 +26,8 @@ from mcp_email_server.emails.models import (
     EmailContentBatchResponse,
     EmailMetadata,
     EmailMetadataPageResponse,
+    MailboxInfo,
+    MailboxListResponse,
 )
 from mcp_email_server.log import logger
 
@@ -995,6 +997,135 @@ class EmailClient:
             except Exception as e:
                 logger.debug(f"Error during logout: {e}")
 
+    async def mark_emails_seen(
+        self, email_ids: list[str], seen: bool = True, mailbox: str = "INBOX"
+    ) -> tuple[list[str], list[str]]:
+        """Mark emails as read or unread by setting/clearing the \\Seen flag. Returns (updated_ids, failed_ids)."""
+        imap = self._imap_connect()
+        updated_ids: list[str] = []
+        failed_ids: list[str] = []
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _send_imap_id(imap)
+            await imap.select(_quote_mailbox(mailbox))
+
+            flag_op = "+FLAGS" if seen else "-FLAGS"
+            for email_id in email_ids:
+                try:
+                    await imap.uid("store", email_id, flag_op, r"(\Seen)")
+                    updated_ids.append(email_id)
+                except Exception as e:
+                    logger.error(f"Failed to mark email {email_id} seen={seen}: {e}")
+                    failed_ids.append(email_id)
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+        return updated_ids, failed_ids
+
+    async def mark_emails_flagged(
+        self, email_ids: list[str], flagged: bool = True, mailbox: str = "INBOX"
+    ) -> tuple[list[str], list[str]]:
+        """Mark emails as flagged/starred or unflagged by setting/clearing the \\Flagged flag. Returns (updated_ids, failed_ids)."""
+        imap = self._imap_connect()
+        updated_ids: list[str] = []
+        failed_ids: list[str] = []
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _send_imap_id(imap)
+            await imap.select(_quote_mailbox(mailbox))
+
+            flag_op = "+FLAGS" if flagged else "-FLAGS"
+            for email_id in email_ids:
+                try:
+                    await imap.uid("store", email_id, flag_op, r"(\Flagged)")
+                    updated_ids.append(email_id)
+                except Exception as e:
+                    logger.error(f"Failed to mark email {email_id} flagged={flagged}: {e}")
+                    failed_ids.append(email_id)
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+        return updated_ids, failed_ids
+
+    async def list_mailboxes(self, pattern: str = "*") -> MailboxListResponse:
+        """List all available mailboxes/folders matching pattern via IMAP LIST."""
+        imap = self._imap_connect()
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _send_imap_id(imap)
+
+            _, folders = await imap.list('""', pattern)
+
+            mailboxes: list[MailboxInfo] = []
+            for folder in folders:
+                if not folder:
+                    continue
+                folder_str = folder.decode("utf-8") if isinstance(folder, bytes) else str(folder)
+                # IMAP LIST response format: (\Flag1 \Flag2) "delimiter" "name"
+                # delimiter may be NIL for top-level; name may or may not be quoted
+                match = re.match(r'\(([^)]*)\)\s+(?:"([^"]*)"|NIL)\s+"?([^"]+)"?\s*$', folder_str.strip())
+                if not match:
+                    logger.debug(f"Could not parse LIST response: {folder_str!r}")
+                    continue
+                flags_str, delimiter, name = match.groups()
+                flags = [f.strip() for f in flags_str.split() if f.strip()]
+                mailboxes.append(MailboxInfo(name=name.strip(), delimiter=delimiter, flags=flags))
+
+            return MailboxListResponse(mailboxes=mailboxes)
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+    async def move_emails(
+        self, email_ids: list[str], source_mailbox: str, destination_mailbox: str
+    ) -> tuple[list[str], list[str]]:
+        """Move emails between mailboxes using RFC 6851 UID MOVE. Returns (moved_ids, failed_ids)."""
+        imap = self._imap_connect()
+        moved_ids: list[str] = []
+        failed_ids: list[str] = []
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _send_imap_id(imap)
+            await imap.select(_quote_mailbox(source_mailbox))
+
+            for email_id in email_ids:
+                try:
+                    result = await imap.uid("move", email_id, _quote_mailbox(destination_mailbox))
+                    if result[0] == "OK":
+                        moved_ids.append(email_id)
+                    else:
+                        logger.error(f"Failed to move email {email_id}: {result}")
+                        failed_ids.append(email_id)
+                except Exception as e:
+                    logger.error(f"Failed to move email {email_id}: {e}")
+                    failed_ids.append(email_id)
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+        return moved_ids, failed_ids
+
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
         imap = self._imap_connect()
@@ -1149,6 +1280,24 @@ class ClassicEmailHandler(EmailHandler):
                 )
             except Exception as e:
                 logger.error(f"Failed to save email to Sent folder: {e}", exc_info=True)
+
+    async def mark_emails_seen(
+        self, email_ids: list[str], seen: bool = True, mailbox: str = "INBOX"
+    ) -> tuple[list[str], list[str]]:
+        return await self.incoming_client.mark_emails_seen(email_ids, seen, mailbox)
+
+    async def mark_emails_flagged(
+        self, email_ids: list[str], flagged: bool = True, mailbox: str = "INBOX"
+    ) -> tuple[list[str], list[str]]:
+        return await self.incoming_client.mark_emails_flagged(email_ids, flagged, mailbox)
+
+    async def list_mailboxes(self, pattern: str = "*") -> MailboxListResponse:
+        return await self.incoming_client.list_mailboxes(pattern)
+
+    async def move_emails(
+        self, email_ids: list[str], source_mailbox: str, destination_mailbox: str
+    ) -> tuple[list[str], list[str]]:
+        return await self.incoming_client.move_emails(email_ids, source_mailbox, destination_mailbox)
 
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""

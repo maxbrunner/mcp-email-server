@@ -15,6 +15,7 @@ from mcp_email_server.emails.models import (
     AttachmentDownloadResponse,
     EmailContentBatchResponse,
     EmailMetadataPageResponse,
+    MailboxListResponse,
 )
 
 mcp = FastMCP("email")
@@ -174,6 +175,82 @@ async def send_email(
     recipient_str = ", ".join(recipients)
     attachment_info = f" with {len(attachments)} attachment(s)" if attachments else ""
     return f"Email sent successfully to {recipient_str}{attachment_info}"
+
+
+@mcp.tool(description="Mark one or more emails as read or unread.")
+async def mark_emails_seen(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    email_ids: Annotated[
+        list[str],
+        Field(description="List of email_id to update (obtained from list_emails_metadata)."),
+    ],
+    seen: Annotated[
+        bool,
+        Field(default=True, description="True=mark as read, False=mark as unread."),
+    ] = True,
+    mailbox: Annotated[str, Field(default="INBOX", description="The mailbox containing the emails.")] = "INBOX",
+) -> str:
+    handler = dispatch_handler(account_name)
+    updated_ids, failed_ids = await handler.mark_emails_seen(email_ids, seen, mailbox)
+    action = "read" if seen else "unread"
+    result = f"Successfully marked {len(updated_ids)} email(s) as {action}"
+    if failed_ids:
+        result += f", failed to mark {len(failed_ids)} email(s): {', '.join(failed_ids)}"
+    return result
+
+
+@mcp.tool(description="Mark one or more emails as flagged/starred or remove the flag.")
+async def mark_emails_flagged(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    email_ids: Annotated[
+        list[str],
+        Field(description="List of email_id to update (obtained from list_emails_metadata)."),
+    ],
+    flagged: Annotated[
+        bool,
+        Field(default=True, description="True=mark as flagged/starred, False=remove flag."),
+    ] = True,
+    mailbox: Annotated[str, Field(default="INBOX", description="The mailbox containing the emails.")] = "INBOX",
+) -> str:
+    handler = dispatch_handler(account_name)
+    updated_ids, failed_ids = await handler.mark_emails_flagged(email_ids, flagged, mailbox)
+    action = "flagged" if flagged else "unflagged"
+    result = f"Successfully marked {len(updated_ids)} email(s) as {action}"
+    if failed_ids:
+        result += f", failed to mark {len(failed_ids)} email(s): {', '.join(failed_ids)}"
+    return result
+
+
+@mcp.tool(description="List all available mailboxes/folders for an account.")
+async def list_mailboxes(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    pattern: Annotated[
+        str,
+        Field(default="*", description="Mailbox name pattern (e.g. '*' for all, 'INBOX.*' for subfolders only)."),
+    ] = "*",
+) -> MailboxListResponse:
+    handler = dispatch_handler(account_name)
+    return await handler.list_mailboxes(pattern)
+
+
+@mcp.tool(
+    description="Move one or more emails from one mailbox to another using IMAP MOVE (RFC 6851). Can also be used to archive emails by moving them to the Archive folder (e.g. destination_mailbox='Archive')."
+)
+async def move_emails(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    email_ids: Annotated[
+        list[str],
+        Field(description="List of email_id to move (obtained from list_emails_metadata)."),
+    ],
+    source_mailbox: Annotated[str, Field(description="The mailbox to move emails from.")],
+    destination_mailbox: Annotated[str, Field(description="The mailbox to move emails to.")],
+) -> str:
+    handler = dispatch_handler(account_name)
+    moved_ids, failed_ids = await handler.move_emails(email_ids, source_mailbox, destination_mailbox)
+    result = f"Successfully moved {len(moved_ids)} email(s) to '{destination_mailbox}'"
+    if failed_ids:
+        result += f", failed to move {len(failed_ids)} email(s): {', '.join(failed_ids)}"
+    return result
 
 
 @mcp.tool(

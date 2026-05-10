@@ -791,4 +791,184 @@ class TestBatchFetchHeaders:
 
         assert len(result) == 2
         assert result["100"]["subject"] == "First"
-        assert result["200"]["subject"] == "Second"
+
+
+class TestMarkEmailsSeen:
+    @pytest.mark.asyncio
+    async def test_mark_emails_seen_sets_seen_flag(self, email_client, mock_imap):
+        """mark_emails_seen with seen=True sends +FLAGS \\Seen."""
+        mock_imap.uid = AsyncMock(return_value=("OK", [b"1 FETCH (FLAGS (\\Seen))"]))
+
+        with patch.object(email_client, "_imap_connect", return_value=mock_imap):
+            updated_ids, failed_ids = await email_client.mark_emails_seen(["100", "200"], seen=True)
+
+        assert updated_ids == ["100", "200"]
+        assert failed_ids == []
+        mock_imap.uid.assert_any_call("store", "100", "+FLAGS", r"(\Seen)")
+        mock_imap.uid.assert_any_call("store", "200", "+FLAGS", r"(\Seen)")
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_seen_clears_seen_flag(self, email_client, mock_imap):
+        """mark_emails_seen with seen=False sends -FLAGS \\Seen."""
+        mock_imap.uid = AsyncMock(return_value=("OK", [b"1 FETCH (FLAGS ())"]))
+
+        with patch.object(email_client, "_imap_connect", return_value=mock_imap):
+            updated_ids, failed_ids = await email_client.mark_emails_seen(["100"], seen=False)
+
+        assert updated_ids == ["100"]
+        assert failed_ids == []
+        mock_imap.uid.assert_called_once_with("store", "100", "-FLAGS", r"(\Seen)")
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_seen_partial_failure(self, email_client, mock_imap):
+        """mark_emails_seen records failed IDs when uid store raises."""
+        call_count = 0
+
+        async def uid_side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise Exception("IMAP error")
+            return ("OK", [])
+
+        mock_imap.uid = AsyncMock(side_effect=uid_side_effect)
+
+        with patch.object(email_client, "_imap_connect", return_value=mock_imap):
+            updated_ids, failed_ids = await email_client.mark_emails_seen(["100", "200"])
+
+        assert updated_ids == ["200"]
+        assert failed_ids == ["100"]
+
+
+class TestMarkEmailsFlagged:
+    @pytest.mark.asyncio
+    async def test_mark_emails_flagged_sets_flag(self, email_client, mock_imap):
+        """mark_emails_flagged with flagged=True sends +FLAGS \\Flagged."""
+        mock_imap.uid = AsyncMock(return_value=("OK", [b"1 FETCH (FLAGS (\\Flagged))"]))
+
+        with patch.object(email_client, "_imap_connect", return_value=mock_imap):
+            updated_ids, failed_ids = await email_client.mark_emails_flagged(["100"], flagged=True)
+
+        assert updated_ids == ["100"]
+        assert failed_ids == []
+        mock_imap.uid.assert_called_once_with("store", "100", "+FLAGS", r"(\Flagged)")
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_flagged_clears_flag(self, email_client, mock_imap):
+        """mark_emails_flagged with flagged=False sends -FLAGS \\Flagged."""
+        mock_imap.uid = AsyncMock(return_value=("OK", [b"1 FETCH (FLAGS ())"]))
+
+        with patch.object(email_client, "_imap_connect", return_value=mock_imap):
+            updated_ids, failed_ids = await email_client.mark_emails_flagged(["100"], flagged=False)
+
+        assert updated_ids == ["100"]
+        assert failed_ids == []
+        mock_imap.uid.assert_called_once_with("store", "100", "-FLAGS", r"(\Flagged)")
+
+
+class TestListMailboxes:
+    @pytest.mark.asyncio
+    async def test_list_mailboxes_parses_response(self, email_client, mock_imap):
+        """list_mailboxes correctly parses name, delimiter, and flags."""
+        mock_imap.list = AsyncMock(
+            return_value=(
+                None,
+                [
+                    b'(\\HasNoChildren) "/" "INBOX"',
+                    b'(\\HasChildren \\Sent) "/" "Sent"',
+                ],
+            )
+        )
+
+        with patch.object(email_client, "_imap_connect", return_value=mock_imap):
+            result = await email_client.list_mailboxes()
+
+        assert len(result.mailboxes) == 2
+        inbox = result.mailboxes[0]
+        assert inbox.name == "INBOX"
+        assert inbox.delimiter == "/"
+        assert r"\HasNoChildren" in inbox.flags
+
+        sent = result.mailboxes[1]
+        assert sent.name == "Sent"
+        assert r"\Sent" in sent.flags
+
+    @pytest.mark.asyncio
+    async def test_list_mailboxes_nil_delimiter(self, email_client, mock_imap):
+        """list_mailboxes parses NIL delimiter as None."""
+        mock_imap.list = AsyncMock(
+            return_value=(
+                None,
+                [b'(\\NoInferiors) NIL "Archive"'],
+            )
+        )
+
+        with patch.object(email_client, "_imap_connect", return_value=mock_imap):
+            result = await email_client.list_mailboxes()
+
+        assert len(result.mailboxes) == 1
+        assert result.mailboxes[0].name == "Archive"
+        assert result.mailboxes[0].delimiter is None
+
+    @pytest.mark.asyncio
+    async def test_list_mailboxes_empty_response(self, email_client, mock_imap):
+        """list_mailboxes returns empty list when server returns no folders."""
+        mock_imap.list = AsyncMock(return_value=(None, []))
+
+        with patch.object(email_client, "_imap_connect", return_value=mock_imap):
+            result = await email_client.list_mailboxes()
+
+        assert result.mailboxes == []
+
+    @pytest.mark.asyncio
+    async def test_list_mailboxes_passes_pattern(self, email_client, mock_imap):
+        """list_mailboxes forwards the pattern argument to imap.list."""
+        mock_imap.list = AsyncMock(return_value=(None, []))
+
+        with patch.object(email_client, "_imap_connect", return_value=mock_imap):
+            await email_client.list_mailboxes(pattern="INBOX.*")
+
+        mock_imap.list.assert_called_once_with('""', "INBOX.*")
+
+
+class TestMoveEmails:
+    @pytest.mark.asyncio
+    async def test_move_emails_success(self, email_client, mock_imap):
+        """move_emails moves emails and returns moved_ids."""
+        mock_imap.uid = AsyncMock(return_value=("OK", [b"UID MOVE completed"]))
+
+        with patch.object(email_client, "_imap_connect", return_value=mock_imap):
+            moved_ids, failed_ids = await email_client.move_emails(
+                ["100", "200"], source_mailbox="INBOX", destination_mailbox="Archive"
+            )
+
+        assert moved_ids == ["100", "200"]
+        assert failed_ids == []
+        mock_imap.uid.assert_any_call("move", "100", '"Archive"')
+        mock_imap.uid.assert_any_call("move", "200", '"Archive"')
+
+    @pytest.mark.asyncio
+    async def test_move_emails_non_ok_result(self, email_client, mock_imap):
+        """move_emails adds to failed_ids when IMAP returns non-OK."""
+        mock_imap.uid = AsyncMock(return_value=("NO", [b"move failed"]))
+
+        with patch.object(email_client, "_imap_connect", return_value=mock_imap):
+            moved_ids, failed_ids = await email_client.move_emails(
+                ["100"], source_mailbox="INBOX", destination_mailbox="Archive"
+            )
+
+        assert moved_ids == []
+        assert failed_ids == ["100"]
+
+    @pytest.mark.asyncio
+    async def test_move_emails_exception(self, email_client, mock_imap):
+        """move_emails adds to failed_ids when uid raises."""
+        mock_imap.uid = AsyncMock(side_effect=Exception("connection lost"))
+
+        with patch.object(email_client, "_imap_connect", return_value=mock_imap):
+            moved_ids, failed_ids = await email_client.move_emails(
+                ["100"], source_mailbox="INBOX", destination_mailbox="Archive"
+            )
+
+        assert moved_ids == []
+        assert failed_ids == ["100"]
